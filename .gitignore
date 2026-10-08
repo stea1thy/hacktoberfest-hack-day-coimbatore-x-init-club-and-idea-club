@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# secrets / local config
+.env
+
+# PCSense runtime artifacts (never commit real sandbox/audit data)
+pcsense_sandbox/
+*.sqlite
+*.sqlite3
+PCSense_Quarantine/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
