@@ -24,8 +24,9 @@ from pcsense.agent.loop import run_loop
 from pcsense.agent.router import route
 from pcsense.contracts import Action, Evidence, Event, Hypothesis, Plan, RouterOut
 from pcsense.safety import audit, executor, policy
+from pcsense.simulate import simulate_plan
 from pcsense.storage.candidates import candidates
-from pcsense.telemetry.diagnosis import diagnose
+from pcsense.telemetry.diagnosis import classify_hypotheses, diagnose
 from pcsense.verify.verify import after as verify_after
 from pcsense.verify.verify import before as verify_before
 from pcsense.verify.verify import compare as verify_compare
@@ -55,7 +56,16 @@ def run(request: str, autonomy: int) -> Iterator[Event]:
         return
 
     hypotheses = diagnose(evidence)
-    yield Event(kind="diagnosis", payload={"hypotheses": [h.model_dump() for h in hypotheses]})
+    classification = classify_hypotheses(hypotheses, evidence)
+    yield Event(
+        kind="diagnosis",
+        payload={
+            "hypotheses": [h.model_dump() for h in hypotheses],
+            "primary": classification["primary"].model_dump() if classification["primary"] else None,
+            "secondary": [h.model_dump() for h in classification["secondary"]],
+            "normal": classification["normal"],
+        },
+    )
 
     actions = _propose_actions(router_out, evidence, hypotheses)
     explanation = explain(evidence, hypotheses, actions)
@@ -70,7 +80,8 @@ def run(request: str, autonomy: int) -> Iterator[Event]:
         actions=actions,
         plan_hash=policy.compute_plan_hash(actions),
     )
-    yield Event(kind="plan", payload=plan.model_dump())
+    simulation = simulate_plan(evidence, actions)
+    yield Event(kind="plan", payload={"plan": plan.model_dump(), "simulation": simulation})
 
     if autonomy == 0:
         return  # Observe: plan is shown, but Execute is disabled — no approval, no auto-run

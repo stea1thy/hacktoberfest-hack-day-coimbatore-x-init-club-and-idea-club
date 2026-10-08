@@ -33,6 +33,26 @@ def test_diagnose_slow_ask_level_reaches_approval_request(sandbox_root):
     assert "action_result" not in kinds  # HIGH-risk stop_process never auto-executes
 
 
+def test_diagnosis_event_carries_primary_secondary_normal_split(sandbox_root):
+    events = list(orchestrator.run("why is my pc slow", autonomy=1))
+    diagnosis_events = [e for e in events if e.kind == "diagnosis" and "hypotheses" in e.payload]
+    assert len(diagnosis_events) == 1
+    payload = diagnosis_events[0].payload
+    assert payload["primary"] is not None
+    assert payload["primary"]["name"] == "memory_pressure"  # mock evidence has ram_percent > 60
+    assert isinstance(payload["secondary"], list)
+    assert isinstance(payload["normal"], list)
+
+
+def test_plan_event_carries_a_simulation(sandbox_root):
+    events = list(orchestrator.run("why is my pc slow", autonomy=1))
+    plan_event = next(e for e in events if e.kind == "plan")
+    assert "simulation" in plan_event.payload
+    assert "plan" in plan_event.payload
+    # mock evidence's top process is ollama.exe with mem_gb=3.2 — stopping it should predict a RAM drop
+    assert plan_event.payload["simulation"]["ram"] is not None
+
+
 def test_approval_request_action_is_denied_by_policy_not_silently_dropped(sandbox_root):
     """Mock evidence's top process is ollama.exe — policy must refuse to stop it even
     though the orchestrator's rule engine proposed it."""
@@ -40,7 +60,7 @@ def test_approval_request_action_is_denied_by_policy_not_silently_dropped(sandbo
     plan_event = next(e for e in events if e.kind == "plan")
     approval_event = next(e for e in events if e.kind == "approval_request")
 
-    plan = Plan(**plan_event.payload)
+    plan = Plan(**plan_event.payload["plan"])
     action_ids = approval_event.payload["action_ids"]
 
     result_events = list(orchestrator.execute_approved(plan, action_ids))
