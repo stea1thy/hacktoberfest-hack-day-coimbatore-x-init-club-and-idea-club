@@ -6,9 +6,8 @@ on top of it.
 """
 from __future__ import annotations
 
-from pcsense.agent.explainer import explain
+from pcsense import orchestrator
 from pcsense.agent.loop import run_loop
-from pcsense.agent.router import route
 from pcsense.contracts import (
     Action,
     ActionResult,
@@ -57,12 +56,23 @@ def test_candidates_returns_action_list():
 
 
 def test_route_returns_router_out():
-    assert isinstance(route("why is my pc slow"), RouterOut)
+    # agent/router.py's route() hits Ollama directly and has no internal fallback; the real
+    # contract boundary is orchestrator._route_with_fallback(), which PCSENSE_CACHED=1 (set
+    # globally for tests — see tests/conftest.py) routes through baseline_route() instead of
+    # a live, slow-to-fail network call.
+    assert isinstance(orchestrator._route_with_fallback("why is my pc slow"), RouterOut)
 
 
-def test_run_loop_returns_evidence_and_tool_results():
-    evidence, tool_results = run_loop("diagnose_slow", {})
-    assert isinstance(evidence, Evidence)
+def test_run_loop_returns_tool_results(monkeypatch):
+    # run_loop(intent, params) -> list[dict] now (no Evidence — that comes from
+    # telemetry.collectors.collect_evidence() directly; see orchestrator.run()). Its own
+    # Gemma-step loop would otherwise make one real (slow, here ~10s+) Ollama attempt before
+    # giving up; monkeypatch that closed so this stays a fast type-contract check.
+    def _no_llm(*args, **kwargs):
+        raise RuntimeError("no llm in tests")
+
+    monkeypatch.setattr("pcsense.agent.loop.call_schema", _no_llm)
+    tool_results = run_loop("diagnose_slow", {})
     assert isinstance(tool_results, list)
 
 
@@ -70,7 +80,10 @@ def test_explain_returns_explanation():
     evidence = collect_evidence()
     hypotheses = diagnose(evidence)
     actions = candidates("C:\\pcsense_sandbox")
-    explanation = explain(evidence, hypotheses, actions)
+    # agent/explainer.py's explain() returns a plain dict and expects hypotheses as
+    # list[dict] (it calls h.get(...) internally — AttributeErrors on a Hypothesis object).
+    # orchestrator._explain_with_fallback() is the real boundary that converts both ways.
+    explanation = orchestrator._explain_with_fallback(evidence, hypotheses, actions)
     assert isinstance(explanation, Explanation)
     assert set(explanation.recommended_action_ids).issubset({a.id for a in actions})
 

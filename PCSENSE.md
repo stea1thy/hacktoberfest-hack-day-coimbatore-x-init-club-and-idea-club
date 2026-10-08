@@ -430,6 +430,21 @@ audit.log(kind, payload)
 ```
 All stubs return realistic mock data on minute 30 so the UI is never blocked.
 
+**Resolved at integration (P4's real agent core, pcsense/orchestrator.py):** `route()` and
+`explain()` return plain dicts (not `RouterOut`/`Explanation`) and can raise/need
+dict-shaped `hypotheses` rather than `list[Hypothesis]`; `run_loop(intent, params)` returns
+only `list[dict]` (tool-step events) — `Evidence` now comes directly from
+`telemetry.collectors.collect_evidence()`, called separately in `orchestrator.run()`. The
+orchestrator's private `_route_with_fallback()` / `_explain_with_fallback()` / `_run_loop_safely()`
+are the real contract boundary: they convert dicts to/from the pydantic types and fall back to
+`baseline_route()` / `template_explain()` on any failure, so nothing downstream (tests,
+`simulate.py`, `report.py`) had to change. **`contracts.py` itself is unchanged** — P1 rejected a
+teammate's edit to it during integration since it deleted `Hypothesis`/`RouterOut`/`Explanation`/
+`Event`/etc.; contract changes still go through P1 only (§2). `PCSENSE_CACHED=1` now also gates
+these two functions at the orchestrator boundary (skips the live call entirely) — tests set it
+globally (`tests/conftest.py`) since an unreachable Ollama fails slowly (~10-35s per call on
+this machine), not instantly.
+
 ---
 
 ## 9. Four tracks (one owner each — parallel, minimal blocking)
