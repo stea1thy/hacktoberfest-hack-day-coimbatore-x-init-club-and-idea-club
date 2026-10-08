@@ -17,15 +17,17 @@ instead of one that blocks mid-stream waiting for a button click:
 """
 from __future__ import annotations
 
+import os
 from typing import Iterator
 
-from pcsense.agent.explainer import explain
+from pcsense.agent.explainer import explain, template_explain
 from pcsense.agent.loop import run_loop
-from pcsense.agent.router import route
-from pcsense.contracts import Action, Evidence, Event, Hypothesis, Plan, RouterOut
+from pcsense.agent.router import baseline_route, route
+from pcsense.contracts import Action, Evidence, Event, Explanation, Hypothesis, Plan, RouterOut
 from pcsense.safety import audit, executor, policy
 from pcsense.simulate import simulate_plan
 from pcsense.storage.candidates import candidates
+from pcsense.telemetry.collectors import collect_evidence
 from pcsense.telemetry.diagnosis import classify_hypotheses, diagnose
 from pcsense.verify.verify import after as verify_after
 from pcsense.verify.verify import before as verify_before
@@ -41,14 +43,16 @@ def run(request: str, autonomy: int) -> Iterator[Event]:
     audit.log("request", {"text": request, "autonomy": autonomy})
 
     yield Event(kind="step", payload={"tool": "route", "args": {"text": request}})
-    router_out = route(request)
+    router_out = _route_with_fallback(request)
+
+    evidence = collect_evidence()
+    yield Event(kind="evidence", payload=evidence.model_dump())
 
     yield Event(kind="step", payload={"tool": "run_loop", "args": router_out.model_dump()})
-    evidence, tool_results = run_loop(router_out.intent, router_out.params)
+    tool_results = _run_loop_safely(router_out.intent, router_out.params)
     for tool_result in tool_results:
         audit.log("tool", tool_result)
         yield Event(kind="step", payload=tool_result)
-    yield Event(kind="evidence", payload=evidence.model_dump())
 
     if router_out.intent not in _ACTIONABLE_INTENTS:
         if router_out.intent == "unsupported":
@@ -68,7 +72,7 @@ def run(request: str, autonomy: int) -> Iterator[Event]:
     )
 
     actions = _propose_actions(router_out, evidence, hypotheses)
-    explanation = explain(evidence, hypotheses, actions)
+    explanation = _explain_with_fallback(evidence, hypotheses, actions)
     yield Event(kind="diagnosis", payload={"explanation": explanation.model_dump()})
 
     if not actions:
@@ -111,6 +115,52 @@ def _execute_and_verify(plan: Plan, action_ids: list[str]) -> Iterator[Event]:
     comparison = verify_compare(evidence_before, evidence_after)
     audit.log("verify", comparison.model_dump())
     yield Event(kind="verify", payload=comparison.model_dump())
+
+
+def _cached_mode() -> bool:
+    """PCSENSE_CACHED=1 (AGENTS.md §9 / PCSENSE.md §11.3's documented demo safety net) skips
+    live Ollama calls entirely — used by tests (never want 10s+ connection-refused delays per
+    call) and as the real demo fallback if Ollama misbehaves."""
+    return os.environ.get("PCSENSE_CACHED") == "1"
+
+
+def _route_with_fallback(request: str) -> RouterOut:
+    """agent/router.py's route() calls Ollama directly and raises on failure (no internal
+    catch, unlike explain()/run_loop()) — fall back to their own baseline_route() keyword
+    matcher rather than letting a down/missing Ollama take out the whole request."""
+    if _cached_mode():
+        return RouterOut(**baseline_route(request))
+    try:
+        router_dict = route(request)
+    except Exception as exc:
+        audit.log("tool", {"tool": "route", "error": str(exc), "fallback": "baseline_route"})
+        router_dict = baseline_route(request)
+    return RouterOut(**router_dict)
+
+
+def _run_loop_safely(intent: str, params: dict) -> list[dict]:
+    """agent/loop.py's run_loop() already catches its own Ollama failures internally and
+    returns a plain list[dict] of tool-step events (no Evidence — that comes from
+    collect_evidence() directly now). This guards against anything it doesn't catch."""
+    try:
+        return run_loop(intent, params)
+    except Exception as exc:
+        return [{"tool": "run_loop", "result": f"error: {exc}"}]
+
+
+def _explain_with_fallback(evidence: Evidence, hypotheses: list[Hypothesis], actions: list[Action]) -> Explanation:
+    """agent/explainer.py's explain() returns a plain dict (not an Explanation) and expects
+    hypotheses as list[dict], not list[Hypothesis] — it calls h.get(...) internally, which
+    would AttributeError on a pydantic object. Convert at the boundary both ways."""
+    hypothesis_dicts = [h.model_dump() for h in hypotheses]
+    if _cached_mode():
+        return Explanation(**template_explain(evidence.model_dump(), hypothesis_dicts, actions))
+    try:
+        result = explain(evidence.model_dump(), hypothesis_dicts, actions)
+        return Explanation(**result)
+    except Exception:
+        result = template_explain(evidence.model_dump(), hypothesis_dicts, actions)
+        return Explanation(**result)
 
 
 def _propose_actions(router_out: RouterOut, evidence: Evidence, hypotheses: list[Hypothesis]) -> list[Action]:

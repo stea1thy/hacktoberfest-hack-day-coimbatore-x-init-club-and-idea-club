@@ -25,7 +25,7 @@ def test_diagnose_slow_observe_level_stops_before_approval(sandbox_root):
 def test_diagnose_slow_ask_level_reaches_approval_request(sandbox_root):
     events = list(orchestrator.run("why is my pc slow", autonomy=1))
     kinds = _event_kinds(events)
-    assert kinds[:2] == ["step", "step"]
+    assert kinds[:2] == ["step", "evidence"]  # route step, then evidence (collected up front)
     assert "evidence" in kinds
     assert "diagnosis" in kinds
     assert "plan" in kinds
