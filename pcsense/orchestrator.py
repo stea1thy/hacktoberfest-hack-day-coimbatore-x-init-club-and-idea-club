@@ -108,13 +108,39 @@ def execute_approved(plan: Plan, approved_ids: list[str]) -> Iterator[Event]:
 def _execute_and_verify(plan: Plan, action_ids: list[str]) -> Iterator[Event]:
     if not action_ids:
         return
-    evidence_before = verify_before()
+    actions_by_id = {a.id: a for a in plan.actions}
+    approved_actions = [actions_by_id[aid] for aid in action_ids if aid in actions_by_id]
+    scenario, target_pid, sandbox_dir, expected_freed_bytes = _infer_verify_scenario(approved_actions)
+
+    evidence_before = verify_before(sandbox_dir=sandbox_dir, target_pid=target_pid)
     for result in executor.run(plan, action_ids):
         yield Event(kind="action_result", payload=result.model_dump())
-    evidence_after = verify_after()
-    comparison = verify_compare(evidence_before, evidence_after)
+    evidence_after = verify_after(sandbox_dir=sandbox_dir, target_pid=target_pid)
+    comparison = verify_compare(evidence_before, evidence_after, scenario, expected_freed_bytes)
     audit.log("verify", comparison.model_dump())
     yield Event(kind="verify", payload=comparison.model_dump())
+
+
+def _infer_verify_scenario(actions: list[Action]) -> tuple[str, int | None, str | None, int]:
+    """verify.compare() needs to know WHAT it's verifying (memory_hog/io_hog/storage_cleanup)
+    plus the specific target_pid/sandbox_dir/expected_freed_bytes for that scenario — none of
+    which `Action` carries explicitly. Infers it from the approved actions themselves. Returns
+    (scenario, target_pid, sandbox_dir, expected_freed_bytes)."""
+    stop_actions = [a for a in actions if a.tool == "stop_process"]
+    if stop_actions:
+        target_pid = stop_actions[0].params.get("pid")
+        # _propose_diagnose_actions() embeds the triggering hypothesis name verbatim in the
+        # rationale (see below) — reuse that instead of threading a new field through Action.
+        scenario = "io_hog" if "disk_io_saturation" in stop_actions[0].rationale else "memory_hog"
+        return scenario, target_pid, None, 0
+
+    storage_actions = [a for a in actions if a.tool in ("quarantine_paths", "empty_quarantine")]
+    if storage_actions:
+        sandbox_root = policy.get_sandbox_root()
+        expected_freed_bytes = sum(a.est_bytes for a in storage_actions)
+        return "storage_cleanup", None, str(sandbox_root) if sandbox_root else None, expected_freed_bytes
+
+    return "memory_hog", None, None, 0
 
 
 def _cached_mode() -> bool:
