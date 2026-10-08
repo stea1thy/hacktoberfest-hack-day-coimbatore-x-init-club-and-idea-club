@@ -35,14 +35,24 @@ def test_scanner_junction_not_traversed(test_sandbox):
     for size, path in res.largest_files:
         assert "harmless.txt" not in path
 
-def test_scanner_permission_denied(test_sandbox):
-    import stat
-    import tempfile
+def test_scanner_permission_denied(test_sandbox, monkeypatch):
+    import os
     
-    denied_path = test_sandbox / "denied_file.txt"
-    denied_path.write_text("secret")
+    # Mock os.scandir to raise PermissionError for a specific directory
+    original_scandir = os.scandir
     
-    # This is tricky on Windows without admin, but let's mock it
-    # We'll just verify the scanner can run on the directory.
-    # In python, creating an actual unreadable file on Windows is hard.
-    pass 
+    def mock_scandir(path):
+        if "denied_folder" in str(path):
+            raise PermissionError("Access is denied")
+        return original_scandir(path)
+        
+    monkeypatch.setattr(os, "scandir", mock_scandir)
+    
+    # Create the folder so it is discovered by the scanner before the mock intercepts it
+    denied_folder = test_sandbox / "denied_folder"
+    denied_folder.mkdir()
+    
+    res = scan(str(test_sandbox))
+    
+    assert res.skipped_denied >= 1
+
