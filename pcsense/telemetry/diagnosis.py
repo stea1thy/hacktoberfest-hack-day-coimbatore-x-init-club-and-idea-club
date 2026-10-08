@@ -204,24 +204,13 @@ HYPOTHESIS_TABLE: list[dict] = [
 # Public types & API
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ConditionResult:
-    """Result of evaluating one condition."""
-    name: str
-    weight: float
-    satisfied: bool
-    detail: str
+from pcsense.contracts import Evidence, Hypothesis
+
+PRIMARY_CONFIDENCE_THRESHOLD = 0.5
+SECONDARY_CONFIDENCE_THRESHOLD = 0.2
 
 
-@dataclass
-class Hypothesis:
-    """A scored diagnosis hypothesis."""
-    name: str
-    confidence: float
-    conditions: list[ConditionResult] = field(default_factory=list)
-
-
-def diagnose(evidence: Any) -> list[Hypothesis]:
+def diagnose(evidence: Evidence) -> list[Hypothesis]:
     """Evaluate all hypotheses against evidence.
 
     Returns hypotheses sorted by confidence (descending), including
@@ -231,25 +220,52 @@ def diagnose(evidence: Any) -> list[Hypothesis]:
 
     for hyp in HYPOTHESIS_TABLE:
         total_confidence = 0.0
-        cond_results: list[ConditionResult] = []
+        conditions_met: list[str] = []
 
         for cond in hyp["conditions"]:
             satisfied, detail = cond.check(evidence)
-            cond_results.append(ConditionResult(
-                name=cond.name,
-                weight=cond.weight,
-                satisfied=satisfied,
-                detail=detail,
-            ))
             if satisfied:
                 total_confidence += cond.weight
+                conditions_met.append(detail)
 
         results.append(Hypothesis(
             name=hyp["name"],
             confidence=round(total_confidence, 2),
-            conditions=cond_results,
+            conditions_met=conditions_met,
         ))
 
     # Sort by confidence descending
     results.sort(key=lambda h: h.confidence, reverse=True)
     return results
+
+
+def classify_hypotheses(hypotheses: list[Hypothesis], evidence: Evidence) -> dict:
+    """Returns {"primary": Hypothesis|None, "secondary": list[Hypothesis], "normal": list[str]}."""
+    ranked = sorted(hypotheses, key=lambda h: h.confidence, reverse=True)
+    primary = ranked[0] if ranked and ranked[0].confidence >= PRIMARY_CONFIDENCE_THRESHOLD else None
+    rest = ranked[1:] if primary else ranked
+    secondary = [h for h in rest if h.confidence >= SECONDARY_CONFIDENCE_THRESHOLD]
+    exclude_names = {h.name for h in ([primary] if primary else []) + secondary}
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "normal": _normal_observations(evidence, exclude_names),
+    }
+
+
+def _normal_observations(evidence: Evidence, exclude_names: set[str]) -> list[str]:
+    """Plain-language notes for metrics that look elevated but aren't flagged as a cause."""
+    notes = []
+    if "cpu_bound" not in exclude_names and evidence.cpu_percent < 70:
+        notes.append(f"CPU usage is {evidence.cpu_percent:.0f}% — within normal range")
+    if (
+        "disk_io_saturation" not in exclude_names
+        and evidence.disk_active_percent is not None
+        and evidence.disk_active_percent < 50
+    ):
+        notes.append(f"Disk activity is {evidence.disk_active_percent:.0f}% — not a bottleneck")
+    if "storage_pressure" not in exclude_names and evidence.total_gb > 0:
+        free_percent = 100 * evidence.free_gb / evidence.total_gb
+        if free_percent > 20:
+            notes.append(f"Storage has {free_percent:.0f}% free — not under pressure")
+    return notes

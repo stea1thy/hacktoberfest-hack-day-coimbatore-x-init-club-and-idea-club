@@ -20,33 +20,7 @@ from typing import Optional
 
 import psutil
 
-# ---------------------------------------------------------------------------
-# Local stub models — mirrors contracts.py exactly.
-# TODO: replace with `from pcsense.contracts import Process, Evidence`
-#       once P1 commits the skeleton.
-# ---------------------------------------------------------------------------
-try:
-    from pcsense.contracts import Process, Evidence  # type: ignore[import]
-except ImportError:
-    from pydantic import BaseModel
-
-    class Process(BaseModel):  # type: ignore[no-redef]
-        pid: int
-        name: str
-        cpu_percent: float
-        mem_gb: float
-        io_mb_s: Optional[float] = None
-
-    class Evidence(BaseModel):  # type: ignore[no-redef]
-        ts: str
-        cpu_percent: float
-        ram_percent: float
-        swap_percent: Optional[float]
-        disk_active_percent: Optional[float]
-        free_gb: float
-        total_gb: float
-        top_processes: list[Process] = []
-        storage: dict = {}
+from pcsense.contracts import Process, Evidence
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -3,7 +3,8 @@ import streamlit as st
 
 from pcsense.telemetry.collectors import collect_evidence
 from pcsense.telemetry.health import health_score
-from pcsense.ui import mock_orchestrator
+from pcsense import orchestrator
+from pcsense.contracts import Plan
 from pcsense.ui.cyber_theme import load_cyber_theme
 
 st.set_page_config(page_title="PCSense", layout="wide")
@@ -35,6 +36,8 @@ try:
     evidence = collect_evidence(top_n=3)
     score, breakdown = health_score(evidence)
 except Exception as e:
+    st.error(f"Error collecting telemetry: {e}")
+    st.exception(e)
     evidence = None
     score, breakdown = 100, []
 
@@ -62,17 +65,20 @@ with tab_main:
         st.session_state.plan = None
         st.session_state.verification = None
         
-        # Start orchestrator
-        for event in mock_orchestrator.start(request_text, autonomy_level):
-            if event.type == "step":
-                st.session_state.feed.append(f"🤖 {event.payload}")
-            elif event.type == "evidence":
-                st.session_state.feed.append(f"📊 Collected evidence: {event.payload}")
-            elif event.type == "diagnosis":
-                st.session_state.feed.append(f"🔍 Diagnosis: {event.payload[0]['name']} ({event.payload[0]['confidence']})")
-            elif event.type == "plan":
-                st.session_state.plan = event.payload
-                
+        with st.spinner("Gathering telemetry and diagnosing... (Please wait)"):
+            # Start orchestrator
+            for event in orchestrator.run(request_text, autonomy_level):
+                if event.kind == "step":
+                    st.session_state.feed.append(f"🤖 {event.payload}")
+                elif event.kind == "evidence":
+                    st.session_state.feed.append(f"📊 Collected evidence: {event.payload}")
+                elif event.kind == "diagnosis":
+                    st.session_state.feed.append(f"🔍 Diagnosis: {event.payload}")
+                elif event.kind == "plan":
+                    st.session_state.plan = event.payload["plan"]
+                elif event.kind == "approval_request":
+                    pass
+                    
         st.rerun()
 
     # Agent Feed
@@ -114,14 +120,15 @@ with tab_main:
             
             submitted = st.form_submit_button("Approve & Execute")
             if submitted:
-                # Execute orchestrator
-                for event in mock_orchestrator.execute(plan, approved_ids):
-                    if event.type == "step":
-                        st.session_state.feed.append(f"🤖 {event.payload}")
-                    elif event.type == "action_result":
-                        st.session_state.feed.append(f"✅ Action {event.payload['action_id']}: {event.payload['detail']}")
-                    elif event.type == "verify":
-                        st.session_state.verification = event.payload
+                with st.spinner("Executing and running 10-second verification... (Please wait)"):
+                    # Execute orchestrator
+                    for event in orchestrator.execute_approved(Plan(**plan), approved_ids):
+                        if event.kind == "step":
+                            st.session_state.feed.append(f"🤖 {event.payload}")
+                        elif event.kind == "action_result":
+                            st.session_state.feed.append(f"✅ Action {event.payload['action_id']}: {event.payload['detail']}")
+                        elif event.kind == "verify":
+                            st.session_state.verification = event.payload
                 st.session_state.plan = None
                 st.rerun()
 

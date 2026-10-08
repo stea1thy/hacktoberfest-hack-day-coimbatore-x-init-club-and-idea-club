@@ -57,7 +57,7 @@ def load_cyber_theme():
     }
 
     /* 4. TYPOGRAPHY */
-    html, body, [class*="css"] {
+    html, body, .stApp {
         font-family: 'JetBrains Mono', 'Fira Code', monospace;
     }
     

@@ -14,19 +14,7 @@ from typing import Optional, Any
 import psutil
 from pcsense.telemetry.collectors import _get_disk_active_percent
 
-# ---------------------------------------------------------------------------
-# Local stubs for contracts.py until P1 lands it
-# ---------------------------------------------------------------------------
-try:
-    from pcsense.contracts import VerifyResult  # type: ignore[import]
-except ImportError:
-    from pydantic import BaseModel
-
-    class VerifyResult(BaseModel):  # type: ignore[no-redef]
-        before: dict[str, Any]
-        after: dict[str, Any]
-        improved: bool
-        summary: str
+from pcsense.contracts import VerifyResult
 
 
 def _get_sandbox_bytes(sandbox_dir: Optional[str]) -> int:
