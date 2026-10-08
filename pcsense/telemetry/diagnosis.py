@@ -1,69 +1,246 @@
-"""Hypothesis rules (as data) + confidence = sum of weights of true conditions.
+"""Rule-based diagnosis — PCSENSE.md §4.4.
 
-Owner: P2.
+Hypothesis rules live as a data table (list of dicts).  Confidence is
+the sum of weights whose conditions are satisfied in the evidence.
+No LLM is used here.
 """
 from __future__ import annotations
 
-from pcsense.contracts import Evidence, Hypothesis
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
-RULES = [
+import psutil
+
+
+# ---------------------------------------------------------------------------
+# Condition type: (evidence) -> (satisfied: bool, detail: str)
+# ---------------------------------------------------------------------------
+CondFn = Callable[[Any], tuple[bool, str]]
+
+
+# ---------------------------------------------------------------------------
+# Condition builders — each returns a CondFn
+# ---------------------------------------------------------------------------
+
+def _ram_above(threshold: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        return (
+            e.ram_percent > threshold,
+            f"RAM {e.ram_percent:.0f}% {'>' if e.ram_percent > threshold else '≤'} {threshold}%",
+        )
+    return check
+
+
+def _ram_below(threshold: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        return (
+            e.ram_percent < threshold,
+            f"RAM {e.ram_percent:.0f}% {'<' if e.ram_percent < threshold else '≥'} {threshold}%",
+        )
+    return check
+
+
+def _cpu_above(threshold: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        return (
+            e.cpu_percent > threshold,
+            f"CPU {e.cpu_percent:.0f}% {'>' if e.cpu_percent > threshold else '≤'} {threshold}%",
+        )
+    return check
+
+
+def _cpu_below(threshold: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        return (
+            e.cpu_percent < threshold,
+            f"CPU {e.cpu_percent:.0f}% {'<' if e.cpu_percent < threshold else '≥'} {threshold}%",
+        )
+    return check
+
+
+def _disk_active_above(threshold: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        if e.disk_active_percent is None:
+            return False, "Disk active %: unavailable"
+        return (
+            e.disk_active_percent > threshold,
+            f"Disk active {e.disk_active_percent:.0f}% {'>' if e.disk_active_percent > threshold else '≤'} {threshold}%",
+        )
+    return check
+
+
+def _top_proc_mem_above(threshold_pct: float) -> CondFn:
+    """True if any single process uses > threshold_pct of total RAM."""
+    def check(e: Any) -> tuple[bool, str]:
+        if not e.top_processes:
+            return False, "No process data"
+        total_ram_gb = psutil.virtual_memory().total / (1 << 30)
+        for p in e.top_processes:
+            proc_pct = (p.mem_gb / total_ram_gb * 100) if total_ram_gb > 0 else 0
+            if proc_pct > threshold_pct:
+                return True, f"{p.name} (PID {p.pid}) uses {proc_pct:.0f}% of RAM (> {threshold_pct}%)"
+        return False, f"No process > {threshold_pct}% of RAM"
+    return check
+
+
+def _top_proc_cpu_above(threshold_pct: float) -> CondFn:
+    """True if any single process uses > threshold_pct CPU."""
+    def check(e: Any) -> tuple[bool, str]:
+        if not e.top_processes:
+            return False, "No process data"
+        for p in e.top_processes:
+            if p.cpu_percent > threshold_pct:
+                return True, f"{p.name} (PID {p.pid}) at {p.cpu_percent:.0f}% CPU (> {threshold_pct}%)"
+        return False, f"No process > {threshold_pct}% CPU"
+    return check
+
+
+def _swap_in_use() -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        if e.swap_percent is None:
+            return False, "Swap data unavailable"
+        if e.swap_percent > 5:
+            return True, f"Swap/pagefile {e.swap_percent:.0f}% in use"
+        return False, f"Swap {e.swap_percent:.0f}% (low)"
+    return check
+
+
+def _one_proc_dominates_io() -> CondFn:
+    """True if one process has > 50% of total I/O across top procs."""
+    def check(e: Any) -> tuple[bool, str]:
+        io_procs = [p for p in e.top_processes if p.io_mb_s is not None and p.io_mb_s > 0]
+        if not io_procs:
+            return False, "No I/O data"
+        total_io = sum(p.io_mb_s for p in io_procs)  # type: ignore[union-attr]
+        if total_io <= 0:
+            return False, "No I/O activity"
+        top_io = max(io_procs, key=lambda p: p.io_mb_s)  # type: ignore[union-attr,arg-type]
+        share = top_io.io_mb_s / total_io * 100  # type: ignore[operator]
+        if share > 50:
+            return True, f"{top_io.name} (PID {top_io.pid}) dominates I/O at {share:.0f}% share"
+        return False, f"I/O spread across processes (top share {share:.0f}%)"
+    return check
+
+
+def _free_space_above(threshold_pct: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        pct = (e.free_gb / e.total_gb * 100) if e.total_gb > 0 else 100
+        return (
+            pct > threshold_pct,
+            f"Free space {pct:.0f}% {'>' if pct > threshold_pct else '≤'} {threshold_pct}%",
+        )
+    return check
+
+
+def _free_space_below(threshold_pct: float) -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        pct = (e.free_gb / e.total_gb * 100) if e.total_gb > 0 else 100
+        return (
+            pct < threshold_pct,
+            f"Free space {pct:.0f}% {'<' if pct < threshold_pct else '≥'} {threshold_pct}%",
+        )
+    return check
+
+
+def _large_reclaimable() -> CondFn:
+    def check(e: Any) -> tuple[bool, str]:
+        reclaimable = e.storage.get("reclaimable_gb", 0)
+        if reclaimable > 2:
+            return True, f"Reclaimable set {reclaimable:.1f} GB"
+        return False, f"Reclaimable set {reclaimable:.1f} GB (small)"
+    return check
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis data table — PCSENSE.md §4.4
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Condition:
+    name: str
+    weight: float
+    check: CondFn
+
+
+HYPOTHESIS_TABLE: list[dict] = [
     {
         "name": "memory_pressure",
         "conditions": [
-            {"id": "ram_gt_85", "weight": 0.40},
-            {"id": "top_proc_gt_25pct_ram", "weight": 0.30},
-            {"id": "cpu_lt_60", "weight": 0.15},
-            {"id": "swap_in_use", "weight": 0.15},
+            _Condition("RAM > 85%",                        0.40, _ram_above(85)),
+            _Condition("Top process > 25% of RAM",         0.30, _top_proc_mem_above(25)),
+            _Condition("CPU < 60%",                        0.15, _cpu_below(60)),
+            _Condition("Swap/pagefile in use",              0.15, _swap_in_use()),
         ],
     },
     {
         "name": "disk_io_saturation",
         "conditions": [
-            {"id": "disk_active_gt_85", "weight": 0.40},
-            {"id": "one_proc_dominates_io", "weight": 0.35},
-            {"id": "ram_lt_85", "weight": 0.15},
-            {"id": "free_gt_10pct", "weight": 0.10},
+            _Condition("Disk active > 85%",                0.40, _disk_active_above(85)),
+            _Condition("One process dominates I/O delta",  0.35, _one_proc_dominates_io()),
+            _Condition("RAM < 85%",                        0.15, _ram_below(85)),
+            _Condition("Free space > 10%",                 0.10, _free_space_above(10)),
         ],
     },
     {
         "name": "cpu_bound",
         "conditions": [
-            {"id": "cpu_avg_gt_85", "weight": 0.50},
-            {"id": "one_proc_gt_40pct_cpu", "weight": 0.35},
-            {"id": "ram_lt_85", "weight": 0.15},
+            _Condition("CPU avg > 85%",                    0.50, _cpu_above(85)),
+            _Condition("One process > 40% CPU",            0.35, _top_proc_cpu_above(40)),
+            _Condition("RAM < 85%",                        0.15, _ram_below(85)),
         ],
     },
     {
         "name": "storage_pressure",
         "conditions": [
-            {"id": "free_lt_15pct", "weight": 0.50},
-            {"id": "free_lt_10pct", "weight": 0.30},
-            {"id": "large_reclaimable_set", "weight": 0.20},
+            _Condition("Free < 15%",                       0.50, _free_space_below(15)),
+            _Condition("Free < 10%",                       0.30, _free_space_below(10)),
+            _Condition("Large reclaimable set",            0.20, _large_reclaimable()),
         ],
     },
 ]
 
 
-def diagnose(evidence: Evidence) -> list[Hypothesis]:
-    """Rank hypotheses by rule-based confidence. Stub: mock memory_pressure guess from RAM%."""
-    if evidence.ram_percent > 60:
-        return [Hypothesis(name="memory_pressure", confidence=0.70, conditions_met=["ram_gt_85", "swap_in_use"])]
-    return [Hypothesis(name="storage_pressure", confidence=0.30, conditions_met=["free_lt_15pct"])]
+# ---------------------------------------------------------------------------
+# Public types & API
+# ---------------------------------------------------------------------------
 
+from pcsense.contracts import Evidence, Hypothesis
 
-# Multi-factor diagnosis (PCSense_Complete_Feature_Specification.txt §1.6): don't treat every
-# ranked hypothesis as a problem. Split into a primary cause, weaker secondary contributors,
-# and plain-language notes about metrics that are elevated but not actually a problem.
 PRIMARY_CONFIDENCE_THRESHOLD = 0.5
 SECONDARY_CONFIDENCE_THRESHOLD = 0.2
 
 
-def classify_hypotheses(hypotheses: list[Hypothesis], evidence: Evidence) -> dict:
-    """Returns {"primary": Hypothesis|None, "secondary": list[Hypothesis], "normal": list[str]}.
+def diagnose(evidence: Evidence) -> list[Hypothesis]:
+    """Evaluate all hypotheses against evidence.
 
-    Purely additive — `diagnose()`'s signature and the Hypothesis contract are unchanged;
-    this just classifies what diagnose() already returned, for a richer activity-feed/UI view.
+    Returns hypotheses sorted by confidence (descending), including
+    those with zero confidence so the UI can show what was ruled out.
     """
+    results: list[Hypothesis] = []
+
+    for hyp in HYPOTHESIS_TABLE:
+        total_confidence = 0.0
+        conditions_met: list[str] = []
+
+        for cond in hyp["conditions"]:
+            satisfied, detail = cond.check(evidence)
+            if satisfied:
+                total_confidence += cond.weight
+                conditions_met.append(detail)
+
+        results.append(Hypothesis(
+            name=hyp["name"],
+            confidence=round(total_confidence, 2),
+            conditions_met=conditions_met,
+        ))
+
+    # Sort by confidence descending
+    results.sort(key=lambda h: h.confidence, reverse=True)
+    return results
+
+
+def classify_hypotheses(hypotheses: list[Hypothesis], evidence: Evidence) -> dict:
+    """Returns {"primary": Hypothesis|None, "secondary": list[Hypothesis], "normal": list[str]}."""
     ranked = sorted(hypotheses, key=lambda h: h.confidence, reverse=True)
     primary = ranked[0] if ranked and ranked[0].confidence >= PRIMARY_CONFIDENCE_THRESHOLD else None
     rest = ranked[1:] if primary else ranked
@@ -77,8 +254,7 @@ def classify_hypotheses(hypotheses: list[Hypothesis], evidence: Evidence) -> dic
 
 
 def _normal_observations(evidence: Evidence, exclude_names: set[str]) -> list[str]:
-    """Plain-language notes for metrics that look elevated but aren't flagged as a cause —
-    avoids treating every high number as an error (§1.6)."""
+    """Plain-language notes for metrics that look elevated but aren't flagged as a cause."""
     notes = []
     if "cpu_bound" not in exclude_names and evidence.cpu_percent < 70:
         notes.append(f"CPU usage is {evidence.cpu_percent:.0f}% — within normal range")

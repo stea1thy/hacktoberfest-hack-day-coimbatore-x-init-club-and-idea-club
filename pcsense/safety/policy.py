@@ -28,6 +28,7 @@ MAX_BYTES_PER_BATCH = 20_000_000_000  # 20 GB — generous headroom over the ~6 
 # §4.8-5 protected process names (case-insensitive, with or without .exe)
 PROTECTED_PROCESS_NAMES = {
     "system", "csrss", "wininit", "winlogon", "services", "lsass", "svchost", "explorer", "dwm",
+    "chrome", "msedge",
 }
 
 
