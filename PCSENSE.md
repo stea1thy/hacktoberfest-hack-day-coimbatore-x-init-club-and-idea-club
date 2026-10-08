@@ -106,6 +106,36 @@ Driver diagnosis/rollback, device repair, privileged helper, startup-app changes
 
 > Running **unprivileged, user-scope only** is a deliberate security feature. Say so in the README.
 
+### 3.4 Full product vision (not hackathon scope — README "where this goes next" slide)
+
+A separate brainstorm doc (`PCSense_Complete_Feature_Specification`) lays out the complete long-term
+vision: PC Health Score with subscores, full storage intelligence (growth prediction, anomaly
+detection, multi-drive, migration), RAM/CPU/GPU/thermal/battery/network/disk/driver intelligence,
+a "PC Black Box" historical event timeline, crash/BSOD root-cause analysis, predictive maintenance,
+a what-if simulator, a hardware upgrade advisor, app/game compatibility prediction ("can I run
+this?"), daily/weekly reports, and long-term degradation tracking. Its own framing (OBSERVE →
+UNDERSTAND → PREDICT → RECOMMEND → SIMULATE → ASK → FIX → VERIFY) is the same loop as §4.1, just
+with far more inputs feeding it — useful for the Devpost "vision / what's next" section.
+
+**What's already in our MVP, in that doc's language:** PC Health Score (§4.5), storage
+intelligence subset (§3.1 F4/F5), AI root-cause diagnosis + confidence (§4.4, F3), natural-language
+router (F2), Fix Center / guided remediation with approval (F6/F7), Fix Verification — literally the
+project's tagline (F10), and the Security/Trust model (risk tiers, approval gate, audit log — §4.6-4.8,
+F11) — this is the strongest-differentiated piece of the whole vision doc and it's already built
+(`pcsense/safety/`).
+
+**Explicitly NOT this hackathon** (overlaps with §3.3's do-not-build list, or is simply out of time
+budget): GPU/VRAM/thermal/battery/network/disk-health/driver telemetry and intelligence, the PC
+Black Box historical timeline, BSOD/crash correlation, predictive maintenance, the what-if
+simulator, hardware upgrade advisor, app/game compatibility prediction, daily/weekly reports,
+technician/support-package mode, and the PC resource map visualization. Each needs a new telemetry
+source (WMI, DXGI/nvidia-smi, Windows Event Log) we haven't scoped, tested, or time-boxed. Note also
+that doc's risk labels (GREEN/YELLOW/ORANGE/RED, §28) are a 4-tier scheme that does **not** match our
+already-frozen 3-tier `Risk = LOW|MEDIUM|HIGH` in `contracts.py` — do not reconcile them mid-hackathon.
+
+> Use this section for the README's "Future Work" / Devpost "what's next" slide. It is honest
+> framing, not a commitment to build it today.
+
 ---
 
 ## 4. How it works
