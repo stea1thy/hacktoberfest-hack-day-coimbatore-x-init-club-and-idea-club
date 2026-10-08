@@ -1,0 +1,3 @@
+{"text": "why is my pc slow", "intent": "diagnose_slow", "params": {}}
+{"text": "free up 3 gb", "intent": "free_space", "params": {"goal_gb": 3}}
+{"text": "what changed since this morning", "intent": "what_changed", "params": {}}
