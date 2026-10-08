@@ -9,10 +9,10 @@
 
 | Member | Contribution   |
 | ------ | -------------- |
-| [Name] | [Contribution] |
-| [Name] | [Contribution] |
-| [Name] | [Contribution] |
-| [Name] | [Contribution] |
+| Shashank Sivakumar | [Contribution] |
+| Nikhil Sivakumar | [Contribution] |
+| Yashas Senthil Kumar | [Contribution] |
+| Hanshith Dhullipalla | [Contribution] |
 
 
 ## Problem Statement
