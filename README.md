@@ -1,10 +1,10 @@
-# [Project Name]
+# PCSense
 
-> [One-line description of the project and what it does.]
+> Task Manager tells us what's happening. PCSense tells you why, and resolves it.
 
 ## Team
 
-**Team Name:** [Team Name]
+**Team Name:** YVL
 
 
 | Member | Contribution   |
