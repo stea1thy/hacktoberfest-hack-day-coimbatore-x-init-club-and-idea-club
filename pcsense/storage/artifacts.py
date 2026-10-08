@@ -1,15 +1,78 @@
-"""Dev-artifact detection by name/path rules (node_modules, dist, build, __pycache__, venvs).
+import os
+import stat
+from typing import List, Dict
 
-Owner: P3.
-"""
-from __future__ import annotations
+# Data-driven rules
+ARTIFACT_DIRS = {
+    "node_modules", "dist", "build", "target", "__pycache__", 
+    ".pytest_cache", ".mypy_cache", ".next", ".gradle", ".tox"
+}
 
-ARTIFACT_NAMES = {"node_modules", "dist", "build", "__pycache__", ".venv", "venv"}
+def get_dir_size(path: str) -> int:
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        total += get_dir_size(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
 
+def is_virtualenv(path: str) -> bool:
+    try:
+        return os.path.exists(os.path.join(path, "pyvenv.cfg"))
+    except OSError:
+        return False
 
 def find_dev_artifacts(root: str) -> list[dict]:
-    """Stub: mock dev-artifact matches with sizes."""
-    return [
-        {"path": f"{root}\\Projects\\webapp\\node_modules", "bytes": 1_200_000_000, "kind": "node_modules"},
-        {"path": f"{root}\\Projects\\ml\\__pycache__", "bytes": 15_000_000, "kind": "__pycache__"},
-    ]
+    results = []
+    
+    # We want a top-down traversal. If we find a match, we don't recurse into it.
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        if hasattr(st, 'st_file_attributes') and (st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                            continue
+                        if entry.is_symlink():
+                            continue
+                            
+                        if entry.is_dir(follow_symlinks=False):
+                            is_match = False
+                            kind = ""
+                            if entry.name in ARTIFACT_DIRS:
+                                is_match = True
+                                kind = entry.name
+                            elif is_virtualenv(entry.path):
+                                is_match = True
+                                kind = "virtualenv"
+                            elif entry.name == ".git":
+                                is_match = True
+                                kind = ".git"
+                                
+                            if is_match:
+                                size = get_dir_size(entry.path)
+                                results.append({
+                                    "path": entry.path,
+                                    "bytes": size,
+                                    "kind": kind
+                                })
+                            else:
+                                stack.append(entry.path)
+                                
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+            
+    return results
